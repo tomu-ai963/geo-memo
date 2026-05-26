@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>GeoMemo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400;700&family=Cormorant+Garamond:wght@300;400&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --accent: #c8a96e;
+    --accent-soft: #f5edd8;
+    --line: #e8d9bc;
+    --line2: #f0e4cc;
+    --text: #3a3028;
+    --sub: #a0907a;
+  }
+
+  /* カラーパレット（5色） */
+  :root {
+    --c0: #c8a96e; /* ゴールド（デフォルト） */
+    --c1: #7aaa8a; /* セージグリーン */
+    --c2: #7a9cbf; /* スレートブルー */
+    --c3: #bf7a9c; /* モーブ */
+    --c4: #bf9a7a; /* テラコッタ */
+  }
+
+  body {
+    background: #fff;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    font-family: 'Zen Kaku Gothic New', sans-serif;
+    color: var(--text);
+    touch-action: none;
+  }
+
+  svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg.panning { cursor: grabbing; }
+
+  .node-group { cursor: pointer; }
+  .node-circle {
+    fill: #fff;
+    stroke-width: 1.5;
+    transition: fill 0.18s, stroke-width 0.18s;
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,0.08));
+  }
+  .node-group:hover .node-circle { fill-opacity: 0.12; stroke-width: 2.5; }
+
+  /* 子メモありノードは太枠 */
+  .node-has-children .node-circle { stroke-width: 2.5; }
+
+  .center-node .node-circle { stroke-width: 2; stroke: var(--accent); }
+  .center-plus {
+    font-size: 24px; fill: var(--accent);
+    text-anchor: middle; dominant-baseline: middle;
+    pointer-events: none; user-select: none; font-weight: 300;
+  }
+  .memo-label {
+    font-size: 10px; fill: var(--text);
+    text-anchor: middle; dominant-baseline: middle;
+    pointer-events: none; user-select: none;
+  }
+  /* 子メモバッジ：点で表示 */
+  .child-dot {
+    pointer-events: none; user-select: none;
+  }
+
+  .edge  { stroke: var(--line);  stroke-width: 1;   fill: none; }
+  .edge2 { stroke: var(--line2); stroke-width: 0.8; fill: none; }
+
+  @keyframes pulse {
+    0%   { r: 34; opacity: 0.5; }
+    100% { r: 52; opacity: 0; }
+  }
+  .pulse-ring {
+    fill: none; stroke: var(--accent); stroke-width: 1;
+    animation: pulse 2.6s ease-out infinite; opacity: 0;
+  }
+
+  /* ─── ボタン群 ─── */
+  .fab {
+    position: fixed;
+    width: 42px; height: 42px; border-radius: 50%;
+    background: #fff; border: 1.5px solid var(--accent);
+    color: var(--accent); font-size: 18px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 12px rgba(200,169,110,0.2);
+    z-index: 50; transition: background 0.15s;
+  }
+  .fab:hover { background: var(--accent-soft); }
+  #fit-btn   { bottom: 24px; right: 20px; }
+  #export-btn { bottom: 76px; right: 20px; font-size: 15px; }
+
+  /* ─── 閲覧モーダル ─── */
+  .overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(200,169,110,0.07);
+    backdrop-filter: blur(3px);
+    z-index: 100; align-items: center; justify-content: center;
+  }
+  .overlay.open { display: flex; }
+
+  .modal {
+    background: rgba(255,255,255,0.97);
+    border: 1px solid #ecdfc8; border-radius: 3px;
+    padding: 34px 30px 26px; width: min(420px, 92vw);
+    box-shadow: 0 16px 56px rgba(0,0,0,0.08);
+    animation: modal-in 0.2s ease;
+    max-height: 90vh; overflow-y: auto;
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(10px) scale(0.97); }
+    to   { opacity: 1; transform: none; }
+  }
+  .modal-heading {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 12px; font-weight: 300;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 16px;
+  }
+
+  /* 閲覧モード */
+  #view-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 22px; font-weight: 300;
+    color: var(--text); margin-bottom: 14px;
+    line-height: 1.4;
+  }
+  #view-body {
+    font-size: 14px; color: #5a4a3a;
+    line-height: 1.8; white-space: pre-wrap;
+    border-top: 1px solid #f0e8d8;
+    padding-top: 14px; margin-bottom: 20px;
+    min-height: 40px;
+  }
+  .view-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* 編集モード */
+  .field-label {
+    font-size: 9.5px; letter-spacing: 0.13em;
+    color: var(--sub); text-transform: uppercase; margin-bottom: 5px;
+  }
+  .modal input, .modal textarea {
+    width: 100%; border: none;
+    border-bottom: 1px solid #e8d9bc;
+    padding: 7px 0; font-family: inherit;
+    font-size: 14px; color: var(--text);
+    background: transparent; outline: none;
+    resize: none; margin-bottom: 20px;
+    transition: border-color 0.2s;
+  }
+  .modal input:focus, .modal textarea:focus { border-color: var(--accent); }
+  .modal textarea { min-height: 88px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+  /* カラー選択 */
+  .color-picker { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; }
+  .color-dot {
+    width: 22px; height: 22px; border-radius: 50%;
+    cursor: pointer; border: 2px solid transparent;
+    transition: transform 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .color-dot.selected { border-color: var(--text); transform: scale(1.2); }
+
+  .btn {
+    padding: 8px 18px; border: 1px solid #e8d9bc;
+    background: transparent; font-family: inherit;
+    font-size: 12px; letter-spacing: 0.08em;
+    color: var(--text); cursor: pointer;
+    border-radius: 1px; transition: all 0.15s;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: #b8995e; }
+  .btn.danger { color: #c05040; border-color: #ead8d4; }
+  .btn.danger:hover { background: #fdf0ee; }
+
+  /* ─── 内部ビュー ─── */
+  #detail-overlay {
+    display: none; position: fixed; inset: 0;
+    background: #fff; z-index: 200; flex-direction: column;
+  }
+  #detail-overlay.open { display: flex; }
+  #detail-header {
+    padding: 16px 22px; border-bottom: 1px solid #f0e8d8;
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  }
+  .back-btn {
+    font-size: 11px; letter-spacing: 0.1em; color: var(--accent);
+    cursor: pointer; border: none; background: none;
+    padding: 0; font-family: inherit;
+  }
+  #detail-title-text {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 18px; font-weight: 300; color: var(--text); flex: 1;
+  }
+  #detail-body { flex: 1; position: relative; overflow: hidden; }
+  #detail-body svg { width: 100%; height: 100%; cursor: grab; }
+
+  /* ─── トースト ─── */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%;
+    transform: translateX(-50%) translateY(14px);
+    background: var(--text); color: #fff;
+    padding: 8px 18px; border-radius: 2px;
+    font-size: 11px; letter-spacing: 0.08em;
+    opacity: 0; transition: all 0.25s;
+    pointer-events: none; z-index: 999;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .hint-text {
+    font-size: 10px; fill: #d0c8bc;
+    text-anchor: middle; letter-spacing: 0.08em;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+
+<svg id="main-svg" xmlns="http://www.w3.org/2000/svg">
+  <g id="main-g">
+    <g id="main-edges"></g>
+    <g id="main-nodes"></g>
+    <g id="center-btn" class="node-group center-node"></g>
+  </g>
+</svg>
+
+<button class="fab" id="fit-btn" title="全体を表示">⊙</button>
+<button class="fab" id="export-btn" title="エクスポート">↓</button>
+
+<!-- 内部ビュー -->
+<div id="detail-overlay">
+  <div id="detail-header">
+    <button class="back-btn" id="btn-back">← 戻る</button>
+    <div id="detail-title-text"></div>
+  </div>
+  <div id="detail-body">
+    <svg id="detail-svg" xmlns="http://www.w3.org/2000/svg">
+      <g id="detail-g">
+        <g id="detail-edges"></g>
+        <g id="detail-nodes"></g>
+        <g id="detail-center-btn" class="node-group center-node"></g>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<!-- 閲覧モーダル -->
+<div class="overlay" id="view-overlay">
+  <div class="modal">
+    <div class="modal-heading">Memo</div>
+    <div id="view-title"></div>
+    <div id="view-body"></div>
+    <div class="view-actions">
+      <button class="btn" id="btn-view-close">閉じる</button>
+      <button class="btn primary" id="btn-view-edit">編集</button>
+    </div>
+  </div>
+</div>
+
+<!-- 編集モーダル -->
+<div class="overlay" id="modal-overlay">
+  <div class="modal">
+    <div class="modal-heading" id="modal-heading">New Memo</div>
+
+    <div class="field-label">カラー</div>
+    <div class="color-picker" id="color-picker"></div>
+
+    <div class="field-label">タイトル</div>
+    <input id="inp-title" type="text" placeholder="タイトル..." maxlength="18">
+    <div class="field-label">メモ</div>
+    <textarea id="inp-body" placeholder="内容..."></textarea>
+    <div class="modal-actions">
+      <button class="btn danger" id="btn-del" style="display:none">削除</button>
+      <button class="btn" id="btn-cancel">キャンセル</button>
+      <button class="btn primary" id="btn-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ══════════════════════════════════════
+//  ノードコールバックマップ
+// ══════════════════════════════════════
+const nodeCallbacks = new Map(); // nodeId → { onTap, onLongPress }
+
+// SVGレベルのタップ・長押し判定（ズーム・パン座標変換不要）
+let svgPressTimer = null;
+let svgPressing = false;
+let svgPressStartX = 0, svgPressStartY = 0;
+let svgPressNodeId = null;
+const SVG_MOVE_THRESHOLD = 12;
+
+function svgStartPress(clientX, clientY, nodeId) {
+  svgPressing = true;
+  svgPressStartX = clientX; svgPressStartY = clientY;
+  svgPressNodeId = nodeId;
+  svgPressTimer = setTimeout(() => {
+    svgPressing = false;
+    const cb = nodeCallbacks.get(svgPressNodeId);
+    if (cb) cb.onLongPress();
+  }, 600);
+}
+function svgEndPress() {
+  if (!svgPressing) return;
+  clearTimeout(svgPressTimer);
+  svgPressing = false;
+  const cb = nodeCallbacks.get(svgPressNodeId);
+  if (cb) cb.onTap();
+}
+function svgCheckMove(clientX, clientY) {
+  if (!svgPressing) return;
+  if (Math.hypot(clientX - svgPressStartX, clientY - svgPressStartY) > SVG_MOVE_THRESHOLD) {
+    clearTimeout(svgPressTimer); svgPressing = false;
+  }
+}
+function svgCancelPress() { clearTimeout(svgPressTimer); svgPressing = false; }
+
+function getNodeIdFromTarget(el) {
+  const g = el.closest('[data-node-id]');
+  return g ? g.getAttribute('data-node-id') : null;
+}
+
+function attachSvgNodeEvents(svgElem) {
+  svgElem.addEventListener('mousedown', e => {
+    const nid = getNodeIdFromTarget(e.target);
+    if (!nid) return;
+    svgStartPress(e.clientX, e.clientY, nid);
+  });
+  svgElem.addEventListener('mouseup', e => {
+    if (svgPressNodeId && getNodeIdFromTarget(e.target) === svgPressNodeId) svgEndPress();
+    else svgCancelPress();
+  });
+  svgElem.addEventListener('mousemove', e => { svgCheckMove(e.clientX, e.clientY); });
+  svgElem.addEventListener('mouseleave', svgCancelPress);
+
+  svgElem.addEventListener('touchstart', e => {
+    const nid = getNodeIdFromTarget(e.target);
+    if (!nid) return;
+    svgStartPress(e.touches[0].clientX, e.touches[0].clientY, nid);
+  }, { passive: true });
+  svgElem.addEventListener('touchend', e => {
+    const nid = getNodeIdFromTarget(e.target);
+    if (nid && nid === svgPressNodeId) svgEndPress();
+    else svgCancelPress();
+  }, { passive: true });
+  svgElem.addEventListener('touchmove', e => {
+    if (e.touches[0]) svgCheckMove(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+}
+
+// ══════════════════════════════════════
+//  カラーパレット
+// ══════════════════════════════════════
+const COLORS = [
+  { id: 0, stroke: '#c8a96e', fill: '#fdf6e8', name: 'ゴールド' },
+  { id: 1, stroke: '#7aaa8a', fill: '#edf6ef', name: 'グリーン' },
+  { id: 2, stroke: '#7a9cbf', fill: '#edf2f8', name: 'ブルー'   },
+  { id: 3, stroke: '#bf7a9c', fill: '#f8edf3', name: 'モーブ'   },
+  { id: 4, stroke: '#bf9a7a', fill: '#f8f0e8', name: 'テラコッタ'},
+];
+
+// ══════════════════════════════════════
+//  データ
+// ══════════════════════════════════════
+const STORAGE_KEY = 'gm_memos';
+function loadData() {
+  for (const key of ['gm_memos','gm3_memos','gm2_memos','gm4_memos']) {
+    const v = localStorage.getItem(key);
+    if (v) { try { return JSON.parse(v); } catch(e) {} }
+  }
+  return [];
+}
+let memos = loadData();
+function saveData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(memos)); }
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+// ══════════════════════════════════════
+//  レイアウト
+// ══════════════════════════════════════
+const NODE_R     = 34;
+const LAYER_BASE = 120;
+const LAYER_GAP  = 112;
+
+function calcPositions(n, cx, cy) {
+  if (n === 0) return [];
+  const result = [];
+  let placed = 0, layer = 0;
+  while (placed < n) {
+    layer++;
+    const capacity = layer * 6;
+    const r = LAYER_BASE + (layer - 1) * LAYER_GAP;
+    const count = Math.min(capacity, n - placed);
+    const offset = -Math.PI / 2;
+    for (let i = 0; i < count; i++) {
+      const angle = offset + (2 * Math.PI * i / count);
+      result.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle), layer, r });
+      placed++;
+    }
+  }
+  return result;
+}
+
+function getBounds(positions, cx, cy) {
+  const xs = [cx, ...positions.map(p => p.x)];
+  const ys = [cy, ...positions.map(p => p.y)];
+  return {
+    minX: Math.min(...xs) - NODE_R - 12,
+    maxX: Math.max(...xs) + NODE_R + 12,
+    minY: Math.min(...ys) - NODE_R - 12,
+    maxY: Math.max(...ys) + NODE_R + 12,
+  };
+}
+
+// ══════════════════════════════════════
+//  SVGヘルパー
+// ══════════════════════════════════════
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs={}) {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+function truncate(str, max=9) {
+  return str.length > max ? str.slice(0, max-1) + '…' : str;
+}
+function getColor(memo) {
+  return COLORS[memo.color ?? 0] ?? COLORS[0];
+}
+
+// ══════════════════════════════════════
+//  エッジ
+// ══════════════════════════════════════
+function drawEdges(edgesEl, positions, cx, cy) {
+  edgesEl.innerHTML = '';
+  if (!positions.length) return;
+  positions.forEach(p => {
+    edgesEl.appendChild(svgEl('line', {
+      class: p.layer === 1 ? 'edge' : 'edge2',
+      x1: cx, y1: cy, x2: p.x, y2: p.y
+    }));
+  });
+  const layers = {};
+  positions.forEach((p, i) => { (layers[p.layer] = layers[p.layer]||[]).push({...p,i}); });
+  Object.values(layers).forEach(ln => {
+    const cnt = ln.length;
+    if (cnt < 2) return;
+    for (let i = 0; i < cnt; i++) {
+      const a = ln[i], b = ln[(i+1)%cnt];
+      edgesEl.appendChild(svgEl('line', {
+        class: a.layer===1 ? 'edge' : 'edge2',
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y
+      }));
+    }
+  });
+  const lkeys = Object.keys(layers).map(Number).sort((a,b)=>a-b);
+  for (let li = 0; li < lkeys.length-1; li++) {
+    const inner = layers[lkeys[li]], outer = layers[lkeys[li+1]];
+    outer.forEach(op => {
+      let minD=Infinity, near=null;
+      inner.forEach(ip => { const d=Math.hypot(op.x-ip.x,op.y-ip.y); if(d<minD){minD=d;near=ip;} });
+      if (near) edgesEl.appendChild(svgEl('line', { class:'edge2', x1:near.x, y1:near.y, x2:op.x, y2:op.y }));
+    });
+  }
+}
+
+// ══════════════════════════════════════
+//  中心ボタン
+// ══════════════════════════════════════
+function drawCenterBtn(gEl, cx, cy, onClick) {
+  gEl.innerHTML = '';
+  gEl.setAttribute('transform', `translate(${cx},${cy})`);
+  gEl.appendChild(svgEl('circle', { class:'pulse-ring', r:NODE_R }));
+  gEl.appendChild(svgEl('circle', { class:'node-circle', r:NODE_R }));
+  const plus = svgEl('text', { class:'center-plus', x:0, y:1 });
+  plus.textContent = '+';
+  gEl.appendChild(plus);
+  gEl.onclick = onClick;
+}
+
+// ══════════════════════════════════════
+//  メモノード（色対応・子メモ視覚化・長押し対応）
+// ══════════════════════════════════════
+function drawMemoNode(memo, pos, onTap, onLongPress) {
+  const col = getColor(memo);
+  const hasChildren = memo.children && memo.children.length > 0;
+
+  const nodeId = memo.id + '_' + (pos.layer||0);
+  const g = svgEl('g', {
+    class: 'node-group' + (hasChildren ? ' node-has-children' : ''),
+    transform: `translate(${pos.x},${pos.y})`,
+    'data-node-id': nodeId
+  });
+
+  // ノード本体
+  const circle = svgEl('circle', { class:'node-circle', r:NODE_R });
+  circle.style.stroke = col.stroke;
+  circle.style.fill = '#fff';
+  g.appendChild(circle);
+
+  // タイトルラベル
+  const label = svgEl('text', { class:'memo-label' });
+  label.textContent = truncate(memo.title, 10);
+  g.appendChild(label);
+
+  // 子メモあり → 下部に小さい点3つ
+  if (hasChildren) {
+    const cnt = memo.children.length;
+    const dotY = NODE_R - 9;
+    // 最大3点
+    const dots = Math.min(cnt, 3);
+    const spacing = 7;
+    const startX = -(dots-1)*spacing/2;
+    for (let i = 0; i < dots; i++) {
+      const dot = svgEl('circle', {
+        class: 'child-dot',
+        cx: startX + i*spacing, cy: dotY, r: 2.2
+      });
+      dot.style.fill = col.stroke;
+      g.appendChild(dot);
+    }
+    // 3個以上は「+」テキスト
+    if (cnt > 3) {
+      const more = svgEl('text', {
+        x: startX + 3*spacing + 4, y: dotY + 1,
+        'font-size': '7', 'text-anchor': 'start',
+        'dominant-baseline': 'middle',
+        'pointer-events': 'none', 'user-select': 'none'
+      });
+      more.style.fill = col.stroke;
+      more.textContent = `+${cnt-3}`;
+      g.appendChild(more);
+    }
+  }
+
+  // イベントはSVGレベルで処理するためノード側では何もしない
+  // コールバックをグローバルマップに登録
+  nodeCallbacks.set(nodeId, { onTap, onLongPress });
+
+  return g;
+}
+
+// ══════════════════════════════════════
+//  getCenter
+// ══════════════════════════════════════
+function getCenter(svgElem) {
+  const r = svgElem.getBoundingClientRect();
+  return {
+    cx: r.width  > 10 ? r.width  / 2 : window.innerWidth  / 2,
+    cy: r.height > 10 ? r.height / 2 : window.innerHeight / 2
+  };
+}
+
+// ══════════════════════════════════════
+//  メインビュー
+// ══════════════════════════════════════
+let mainPos = [];
+
+function renderMain() {
+  nodeCallbacks.clear();
+  const svg = document.getElementById('main-svg');
+  const { cx, cy } = getCenter(svg);
+  mainPos = calcPositions(memos.length, cx, cy);
+  drawEdges(document.getElementById('main-edges'), mainPos, cx, cy);
+
+  const nodesEl = document.getElementById('main-nodes');
+  nodesEl.innerHTML = '';
+  mainPos.forEach((pos, i) => {
+    const memo = memos[i];
+    nodesEl.appendChild(drawMemoNode(
+      memo, pos,
+      () => openViewModal(memo.id, null),   // タップ → 閲覧
+      () => openDetail(memo.id)             // 長押し → 内部へ
+    ));
+  });
+
+  const old = document.getElementById('main-hint');
+  if (old) old.remove();
+  if (memos.length > 0) {
+    const hint = svgEl('text', { id:'main-hint', class:'hint-text', x:cx, y:cy*2-18 });
+    hint.textContent = 'タップ → 閲覧　長押し → 内部へ';
+    document.getElementById('main-g').appendChild(hint);
+  }
+
+  drawCenterBtn(
+    document.getElementById('center-btn'), cx, cy,
+    e => { e.stopPropagation(); openEditModal({ id:null, parentId:null }); }
+  );
+  attachSvgNodeEvents(svg);
+}
+
+// ══════════════════════════════════════
+//  内部ビュー
+// ══════════════════════════════════════
+let currentDetailId = null;
+
+function openDetail(memoId) {
+  currentDetailId = memoId;
+  const memo = memos.find(m => m.id === memoId);
+  if (!memo) return;
+  document.getElementById('detail-title-text').textContent = memo.title;
+  document.getElementById('detail-overlay').classList.add('open');
+  // トランスフォームは renderDetail 後にリセット
+  setTimeout(() => { dZoom=1; dPanX=0; dPanY=0; applyDetailTransform(); }, 50);
+  renderDetail();
+}
+
+function renderDetail() {
+  nodeCallbacks.clear();
+  const memo = memos.find(m => m.id === currentDetailId);
+  if (!memo) return;
+  const svg = document.getElementById('detail-svg');
+  const { cx, cy } = getCenter(svg);
+  const children = memo.children || [];
+  const positions = calcPositions(children.length, cx, cy);
+
+  drawEdges(document.getElementById('detail-edges'), positions, cx, cy);
+  const nodesEl = document.getElementById('detail-nodes');
+  nodesEl.innerHTML = '';
+  positions.forEach((pos, i) => {
+    const child = children[i];
+    nodesEl.appendChild(drawMemoNode(
+      child, pos,
+      () => openViewModal(child.id, currentDetailId),
+      () => {} // 内部の子は長押し無効（今後拡張）
+    ));
+  });
+
+  drawCenterBtn(
+    document.getElementById('detail-center-btn'), cx, cy,
+    e => { e.stopPropagation(); openEditModal({ id:null, parentId:currentDetailId }); }
+  );
+  attachSvgNodeEvents(svg);
+}
+
+document.getElementById('btn-back').addEventListener('click', () => {
+  document.getElementById('detail-overlay').classList.remove('open');
+  currentDetailId = null;
+  renderMain();
+});
+
+// ══════════════════════════════════════
+//  閲覧モーダル
+// ══════════════════════════════════════
+let viewingId = null;
+let viewingParentId = null;
+
+function openViewModal(memoId, parentId) {
+  viewingId = memoId;
+  viewingParentId = parentId;
+
+  let memo;
+  if (parentId !== null) {
+    const parent = memos.find(m => m.id === parentId);
+    memo = parent?.children?.find(c => c.id === memoId);
+  } else {
+    memo = memos.find(m => m.id === memoId);
+  }
+  if (!memo) return;
+
+  const col = getColor(memo);
+  document.getElementById('view-title').textContent = memo.title;
+  document.getElementById('view-title').style.color = col.stroke;
+  document.getElementById('view-body').textContent = memo.body || '（メモなし）';
+  document.getElementById('view-overlay').classList.add('open');
+}
+
+document.getElementById('btn-view-close').addEventListener('click', () => {
+  document.getElementById('view-overlay').classList.remove('open');
+});
+document.getElementById('view-overlay').addEventListener('click', e => {
+  if (e.target.id === 'view-overlay') document.getElementById('view-overlay').classList.remove('open');
+});
+document.getElementById('btn-view-edit').addEventListener('click', () => {
+  document.getElementById('view-overlay').classList.remove('open');
+  openEditModal({ id: viewingId, parentId: viewingParentId });
+});
+
+// ══════════════════════════════════════
+//  カラーピッカー描画
+// ══════════════════════════════════════
+let selectedColor = 0;
+
+function buildColorPicker() {
+  const picker = document.getElementById('color-picker');
+  picker.innerHTML = '';
+  COLORS.forEach(c => {
+    const dot = document.createElement('div');
+    dot.className = 'color-dot' + (c.id === selectedColor ? ' selected' : '');
+    dot.style.background = c.stroke;
+    dot.title = c.name;
+    dot.addEventListener('click', () => {
+      selectedColor = c.id;
+      document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('selected'));
+      dot.classList.add('selected');
+    });
+    picker.appendChild(dot);
+  });
+}
+
+// ══════════════════════════════════════
+//  編集モーダル
+// ══════════════════════════════════════
+let editState = { id: null, parentId: null };
+
+function openEditModal({ id, parentId }) {
+  editState = { id, parentId };
+  const isNew = !id;
+  document.getElementById('modal-heading').textContent = isNew ? 'New Memo' : 'Edit Memo';
+  document.getElementById('btn-del').style.display = isNew ? 'none' : 'inline-block';
+
+  if (!isNew) {
+    let memo = parentId !== null
+      ? memos.find(m=>m.id===parentId)?.children?.find(c=>c.id===id)
+      : memos.find(m=>m.id===id);
+    if (!memo) return;
+    document.getElementById('inp-title').value = memo.title;
+    document.getElementById('inp-body').value = memo.body;
+    selectedColor = memo.color ?? 0;
+  } else {
+    document.getElementById('inp-title').value = '';
+    document.getElementById('inp-body').value = '';
+    selectedColor = 0;
+  }
+  buildColorPicker();
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('inp-title').focus(), 80);
+}
+
+function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
+
+document.getElementById('btn-cancel').addEventListener('click', closeModal);
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target.id === 'modal-overlay') closeModal();
+});
+
+document.getElementById('btn-save').addEventListener('click', () => {
+  const title = document.getElementById('inp-title').value.trim();
+  const body  = document.getElementById('inp-body').value.trim();
+  if (!title) { showToast('タイトルを入力してください'); return; }
+  const { id, parentId } = editState;
+
+  if (parentId !== null) {
+    const parent = memos.find(m=>m.id===parentId);
+    if (!parent.children) parent.children = [];
+    if (id) {
+      const c = parent.children.find(c=>c.id===id);
+      if (c) { c.title=title; c.body=body; c.color=selectedColor; }
+    } else {
+      parent.children.push({ id:uid(), title, body, color:selectedColor, children:[] });
+    }
+  } else {
+    if (id) {
+      const m = memos.find(m=>m.id===id);
+      if (m) { m.title=title; m.body=body; m.color=selectedColor; }
+    } else {
+      memos.push({ id:uid(), title, body, color:selectedColor, children:[] });
+    }
+  }
+  saveData(); closeModal(); showToast('保存しました ✓');
+  if (currentDetailId) renderDetail(); else renderMain();
+});
+
+document.getElementById('btn-del').addEventListener('click', () => {
+  const { id, parentId } = editState;
+  if (!id || !confirm('このメモを削除しますか？')) return;
+  if (parentId !== null) {
+    const p = memos.find(m=>m.id===parentId);
+    if (p) p.children = (p.children||[]).filter(c=>c.id!==id);
+  } else {
+    memos = memos.filter(m=>m.id!==id);
+  }
+  saveData(); closeModal(); showToast('削除しました');
+  if (currentDetailId) renderDetail(); else renderMain();
+});
+
+// ══════════════════════════════════════
+//  エクスポート
+// ══════════════════════════════════════
+document.getElementById('export-btn').addEventListener('click', () => {
+  // テキスト形式で書き出し
+  let text = '# GeoMemo エクスポート\n';
+  text += `# ${new Date().toLocaleString('ja-JP')}\n\n`;
+  memos.forEach((m, i) => {
+    text += `━━━ ${i+1}. ${m.title} ━━━\n`;
+    if (m.body) text += `${m.body}\n`;
+    if (m.children && m.children.length > 0) {
+      text += `\n  ▸ 内部メモ (${m.children.length}件)\n`;
+      m.children.forEach((c, j) => {
+        text += `  ${j+1}. ${c.title}\n`;
+        if (c.body) text += `     ${c.body.replace(/\n/g,'\n     ')}\n`;
+      });
+    }
+    text += '\n';
+  });
+
+  // JSON も別途
+  const json = JSON.stringify(memos, null, 2);
+
+  // テキストダウンロード
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `geomemo_${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+
+  showToast('エクスポートしました ✓');
+});
+
+// ══════════════════════════════════════
+//  トースト
+// ══════════════════════════════════════
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ══════════════════════════════════════
+//  フィット
+// ══════════════════════════════════════
+let zoom=1, panX=0, panY=0;
+
+function applyTransform() {
+  document.getElementById('main-g').setAttribute(
+    'transform', `translate(${panX},${panY}) scale(${zoom})`
+  );
+}
+
+function fitView() {
+  if (memos.length === 0) { zoom=1; panX=0; panY=0; applyTransform(); return; }
+  const svg = document.getElementById('main-svg');
+  const W = svg.clientWidth, H = svg.clientHeight;
+  const { cx, cy } = getCenter(svg);
+  const bounds = getBounds(mainPos, cx, cy);
+  const bW = bounds.maxX - bounds.minX;
+  const bH = bounds.maxY - bounds.minY;
+  const scale = Math.min(W/bW, H/bH, 1.2) * 0.90;
+  zoom = scale;
+  const bcx = (bounds.minX+bounds.maxX)/2;
+  const bcy = (bounds.minY+bounds.maxY)/2;
+  panX = W/2 - bcx*scale;
+  panY = H/2 - bcy*scale;
+  applyTransform();
+}
+
+document.getElementById('fit-btn').addEventListener('click', fitView);
+
+// ══════════════════════════════════════
+//  マウス操作
+// ══════════════════════════════════════
+let isPanning=false, mSX, mSY;
+const mainSvg = document.getElementById('main-svg');
+
+mainSvg.addEventListener('mousedown', e => {
+  if (e.target.closest('.node-group')) return;
+  isPanning=true; mSX=e.clientX-panX; mSY=e.clientY-panY;
+  mainSvg.classList.add('panning');
+});
+window.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  panX=e.clientX-mSX; panY=e.clientY-mSY;
+  applyTransform();
+});
+window.addEventListener('mouseup', () => { isPanning=false; mainSvg.classList.remove('panning'); });
+
+mainSvg.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = mainSvg.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  const newZoom = Math.min(4, Math.max(0.15, zoom * (e.deltaY>0?0.9:1.1)));
+  panX = mx-(mx-panX)*(newZoom/zoom);
+  panY = my-(my-panY)*(newZoom/zoom);
+  zoom = newZoom;
+  applyTransform();
+}, { passive:false });
+
+// ══════════════════════════════════════
+//  タッチ操作（ピンチ＋パン）
+// ══════════════════════════════════════
+let prevTouches={}, lastPinchDist=null, lastPinchMid=null;
+
+mainSvg.addEventListener('touchstart', e => {
+  Array.from(e.touches).forEach(t => {
+    prevTouches[t.identifier] = { x:t.clientX, y:t.clientY };
+  });
+  if (e.touches.length===2) {
+    const a=e.touches[0], b=e.touches[1];
+    lastPinchDist = Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
+    lastPinchMid  = { x:(a.clientX+b.clientX)/2, y:(a.clientY+b.clientY)/2 };
+  }
+}, { passive:true });
+
+mainSvg.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length===1) {
+    const t=e.touches[0], prev=prevTouches[t.identifier];
+    if (prev && !e.target.closest('.node-group')) {
+      panX += t.clientX-prev.x;
+      panY += t.clientY-prev.y;
+      applyTransform();
+    }
+    prevTouches[t.identifier] = { x:t.clientX, y:t.clientY };
+  } else if (e.touches.length===2) {
+    const a=e.touches[0], b=e.touches[1];
+    const dist=Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
+    const mid={ x:(a.clientX+b.clientX)/2, y:(a.clientY+b.clientY)/2 };
+    if (lastPinchDist && lastPinchMid) {
+      const newZoom=Math.min(4,Math.max(0.15,zoom*(dist/lastPinchDist)));
+      const rect=mainSvg.getBoundingClientRect();
+      const mx=mid.x-rect.left, my=mid.y-rect.top;
+      panX = mx-(mx-panX)*(newZoom/zoom)+(mid.x-lastPinchMid.x);
+      panY = my-(my-panY)*(newZoom/zoom)+(mid.y-lastPinchMid.y);
+      zoom=newZoom; applyTransform();
+    }
+    lastPinchDist=dist; lastPinchMid=mid;
+    Array.from(e.touches).forEach(t=>{ prevTouches[t.identifier]={x:t.clientX,y:t.clientY}; });
+  }
+}, { passive:false });
+
+mainSvg.addEventListener('touchend', e => {
+  Array.from(e.changedTouches).forEach(t=>{ delete prevTouches[t.identifier]; });
+  if (e.touches.length<2) { lastPinchDist=null; lastPinchMid=null; }
+}, { passive:true });
+
+// ══════════════════════════════════════
+//  内部ビューのタッチパン
+// ══════════════════════════════════════
+const detailSvg = document.getElementById('detail-svg');
+let dPrevTouches = {}, dLastPinchDist = null, dLastPinchMid = null;
+let dZoom = 1, dPanX = 0, dPanY = 0;
+
+function applyDetailTransform() {
+  document.getElementById('detail-g').setAttribute(
+    'transform', `translate(${dPanX},${dPanY}) scale(${dZoom})`
+  );
+}
+
+// 内部ビューを開くときにリセット
+function resetDetailTransform() { dZoom=1; dPanX=0; dPanY=0; applyDetailTransform(); }
+
+detailSvg.addEventListener('touchstart', e => {
+  Array.from(e.touches).forEach(t => {
+    dPrevTouches[t.identifier] = { x: t.clientX, y: t.clientY };
+  });
+  if (e.touches.length === 2) {
+    const a=e.touches[0], b=e.touches[1];
+    dLastPinchDist = Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
+    dLastPinchMid  = { x:(a.clientX+b.clientX)/2, y:(a.clientY+b.clientY)/2 };
+  }
+}, { passive: true });
+
+detailSvg.addEventListener('touchmove', e => {
+  if (e.touches.length === 1) {
+    const t=e.touches[0], prev=dPrevTouches[t.identifier];
+    if (prev && !e.target.closest('[data-node-id]')) {
+      e.preventDefault();
+      dPanX += t.clientX - prev.x;
+      dPanY += t.clientY - prev.y;
+      applyDetailTransform();
+    }
+    dPrevTouches[t.identifier] = { x: t.clientX, y: t.clientY };
+  } else if (e.touches.length === 2) {
+    const a=e.touches[0], b=e.touches[1];
+    const dist = Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
+    const mid  = { x:(a.clientX+b.clientX)/2, y:(a.clientY+b.clientY)/2 };
+    if (dLastPinchDist && dLastPinchMid) {
+      const newZoom = Math.min(4, Math.max(0.15, dZoom*(dist/dLastPinchDist)));
+      const rect = detailSvg.getBoundingClientRect();
+      const mx=mid.x-rect.left, my=mid.y-rect.top;
+      dPanX = mx-(mx-dPanX)*(newZoom/dZoom)+(mid.x-dLastPinchMid.x);
+      dPanY = my-(my-dPanY)*(newZoom/dZoom)+(mid.y-dLastPinchMid.y);
+      dZoom = newZoom; applyDetailTransform();
+    }
+    dLastPinchDist=dist; dLastPinchMid=mid;
+    Array.from(e.touches).forEach(t=>{ dPrevTouches[t.identifier]={x:t.clientX,y:t.clientY}; });
+  }
+}, { passive: false });
+
+detailSvg.addEventListener('touchend', e => {
+  Array.from(e.changedTouches).forEach(t=>{ delete dPrevTouches[t.identifier]; });
+  if (e.touches.length < 2) { dLastPinchDist=null; dLastPinchMid=null; }
+}, { passive: true });
+
+// ══════════════════════════════════════
+//  リサイズ
+// ══════════════════════════════════════
+window.addEventListener('resize', () => {
+  if (currentDetailId) renderDetail(); else renderMain();
+});
+
+// ══════════════════════════════════════
+//  起動
+// ══════════════════════════════════════
+renderMain();
+</script>
+</body>
+</html>
