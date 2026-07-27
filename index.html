@@ -47,6 +47,13 @@
   }
   .node-group:hover .node-circle { fill-opacity: 0.12; stroke-width: 2.5; }
 
+  /* ドラッグ中のノード */
+  .node-group.dragging { opacity: 0.9; }
+  .node-group.dragging .node-circle {
+    stroke-width: 3;
+    filter: drop-shadow(0 6px 18px rgba(0,0,0,0.18));
+  }
+
   /* 子メモありノードは太枠 */
   .node-has-children .node-circle { stroke-width: 2.5; }
 
@@ -93,6 +100,7 @@
   #export-btn { bottom: 76px;  right: 20px; font-size: 15px; }
   #import-btn { bottom: 128px; right: 20px; font-size: 15px; }
   #text-btn   { bottom: 180px; right: 20px; font-size: 13px; }
+  #tidy-btn   { bottom: 232px; right: 20px; font-size: 15px; }
 
   /* ─── 閲覧モーダル ─── */
   .overlay {
@@ -234,6 +242,7 @@
 <button class="fab" id="export-btn" title="バックアップを書き出す（JSON）">↓</button>
 <button class="fab" id="import-btn" title="バックアップを読み込む（JSON）">↑</button>
 <button class="fab" id="text-btn" title="テキストで書き出す">≡</button>
+<button class="fab" id="tidy-btn" title="自動レイアウトに戻す">✳</button>
 <input type="file" id="file-input" accept="application/json,.json" style="display:none">
 
 <!-- 内部ビュー -->
@@ -241,6 +250,7 @@
   <div id="detail-header">
     <button class="back-btn" id="btn-back">← 戻る</button>
     <div id="detail-title-text"></div>
+    <button class="back-btn" id="btn-detail-tidy" title="自動レイアウトに戻す">✳ 整列</button>
   </div>
   <div id="detail-body">
     <svg id="detail-svg" xmlns="http://www.w3.org/2000/svg">
@@ -320,12 +330,80 @@ function svgEndPress() {
   if (cb) cb.onTap();
 }
 function svgCheckMove(clientX, clientY) {
+  if (dragging) return;   // ドラッグ中は window 側で処理する
   if (!svgPressing) return;
   if (Math.hypot(clientX - svgPressStartX, clientY - svgPressStartY) > SVG_MOVE_THRESHOLD) {
     clearTimeout(svgPressTimer); svgPressing = false;
+    // 閾値を超えた＝タップでも長押しでもなく「移動」
+    const cb = nodeCallbacks.get(svgPressNodeId);
+    if (cb && cb.memo && cb.el) startDrag(cb, svgPressStartX, svgPressStartY);
   }
 }
 function svgCancelPress() { clearTimeout(svgPressTimer); svgPressing = false; }
+
+// ══════════════════════════════════════
+//  ドラッグ配置
+// ══════════════════════════════════════
+let dragging = null;
+
+// 操作対象は「今開いているビュー」で決まる
+function activeView() {
+  if (currentDetailId) {
+    const parent = memos.find(m => m.id === currentDetailId);
+    return {
+      svg: document.getElementById('detail-svg'),
+      edges: document.getElementById('detail-edges'),
+      list: (parent && parent.children) || [],
+      zoom: dZoom, detail: true
+    };
+  }
+  return {
+    svg: document.getElementById('main-svg'),
+    edges: document.getElementById('main-edges'),
+    list: memos, zoom, detail: false
+  };
+}
+
+function startDrag(cb, clientX, clientY) {
+  const view = activeView();
+  const { cx, cy } = getCenter(view.svg);
+  dragging = {
+    memo: cb.memo, el: cb.el, view, cx, cy,
+    startX: clientX, startY: clientY,
+    origX: cb.memo.x, origY: cb.memo.y,
+    moved: false
+  };
+  cb.el.classList.add('dragging');
+}
+
+function dragMove(clientX, clientY) {
+  if (!dragging) return;
+  const d = dragging;
+  const z = d.view.zoom || 1;   // 画面上の移動量をグラフ座標に戻す
+  d.memo.x = d.origX + (clientX - d.startX) / z;
+  d.memo.y = d.origY + (clientY - d.startY) / z;
+  d.moved = true;
+  d.el.setAttribute('transform', `translate(${d.cx + d.memo.x},${d.cy + d.memo.y})`);
+  drawEdges(d.view.edges, positionsOf(d.view.list, d.cx, d.cy), d.cx, d.cy);
+}
+
+function endDrag() {
+  if (!dragging) return;
+  const d = dragging;
+  d.el.classList.remove('dragging');
+  dragging = null;
+  if (!d.moved) return;
+
+  d.memo.x = Math.round(d.memo.x);
+  d.memo.y = Math.round(d.memo.y);
+  d.memo.updatedAt = now();
+  d.el.setAttribute('transform', `translate(${d.cx + d.memo.x},${d.cy + d.memo.y})`);
+
+  const pos = positionsOf(d.view.list, d.cx, d.cy);
+  drawEdges(d.view.edges, pos, d.cx, d.cy);
+  if (!d.view.detail) mainPos = pos;   // ⊙ が正しく全体表示できるように
+  saveData();
+}
 
 function getNodeIdFromTarget(el) {
   const g = el.closest('[data-node-id]');
@@ -417,8 +495,7 @@ function migrateTimestamps(list) {
   return changed;
 }
 
-let memos = loadData();
-if (migrateTimestamps(memos)) saveData();
+let memos = loadData();   // 移行（timestamps / positions）は起動セクションで行う
 
 // ══════════════════════════════════════
 //  レイアウト
@@ -444,6 +521,58 @@ function calcPositions(n, cx, cy) {
     }
   }
   return result;
+}
+
+// 位置は「中心からの相対座標」で保存する。
+// 画面サイズが変わっても星座の形が崩れない
+function hasPos(m) {
+  return Number.isFinite(m.x) && Number.isFinite(m.y);
+}
+function positionsOf(list, cx, cy) {
+  return list.map(m => ({ x: cx + m.x, y: cy + m.y }));
+}
+
+// 既存ノードとぶつからない最初のスロットを返す
+function findFreeSlot(placed) {
+  const MIN_D = NODE_R * 2 + 12;
+  for (let layer = 1; layer <= 12; layer++) {
+    const capacity = layer * 6;
+    const r = LAYER_BASE + (layer - 1) * LAYER_GAP;
+    for (let i = 0; i < capacity; i++) {
+      const a = -Math.PI / 2 + (2 * Math.PI * i / capacity);
+      const p = { x: Math.round(r * Math.cos(a)), y: Math.round(r * Math.sin(a)) };
+      if (placed.every(m => Math.hypot(m.x - p.x, m.y - p.y) >= MIN_D)) return p;
+    }
+  }
+  return { x: 0, y: LAYER_BASE + 12 * LAYER_GAP };
+}
+
+// x/y を持たないメモに初期位置を与える
+function ensurePositions(list) {
+  let changed = false;
+  const walk = arr => {
+    const missing = arr.filter(m => !hasPos(m));
+    if (missing.length) {
+      changed = true;
+      if (missing.length === arr.length) {
+        // 全部未設定＝旧データ。これまでの自動レイアウトをそのまま初期配置にする
+        const defaults = calcPositions(arr.length, 0, 0);
+        arr.forEach((m, i) => { m.x = Math.round(defaults[i].x); m.y = Math.round(defaults[i].y); });
+      } else {
+        // 一部だけ未設定（インポート等）は空きスロットへ
+        missing.forEach(m => { const p = findFreeSlot(arr.filter(hasPos)); m.x = p.x; m.y = p.y; });
+      }
+    }
+    arr.forEach(m => { if (Array.isArray(m.children)) walk(m.children); });
+  };
+  walk(list);
+  return changed;
+}
+
+// 自動レイアウトに戻す
+function relayout(list) {
+  const defaults = calcPositions(list.length, 0, 0);
+  list.forEach((m, i) => { m.x = Math.round(defaults[i].x); m.y = Math.round(defaults[i].y); });
 }
 
 function getBounds(positions, cx, cy) {
@@ -476,35 +605,59 @@ function getColor(memo) {
 // ══════════════════════════════════════
 //  エッジ
 // ══════════════════════════════════════
+// 自由配置になったので「層」は配列の順番ではなく中心からの距離から求め直す
+const MAX_LINK = LAYER_GAP * 2.4;   // これ以上離れたノード同士は結ばない
+
 function drawEdges(edgesEl, positions, cx, cy) {
   edgesEl.innerHTML = '';
   if (!positions.length) return;
-  positions.forEach(p => {
+
+  const pts = positions.map(p => {
+    const d = Math.hypot(p.x - cx, p.y - cy);
+    return {
+      x: p.x, y: p.y,
+      layer: Math.max(1, Math.round((d - LAYER_BASE) / LAYER_GAP) + 1),
+      angle: Math.atan2(p.y - cy, p.x - cx)
+    };
+  });
+
+  // 中心からのスポークは常に描く（構造そのもの）
+  pts.forEach(p => {
     edgesEl.appendChild(svgEl('line', {
       class: p.layer === 1 ? 'edge' : 'edge2',
       x1: cx, y1: cy, x2: p.x, y2: p.y
     }));
   });
+
   const layers = {};
-  positions.forEach((p, i) => { (layers[p.layer] = layers[p.layer]||[]).push({...p,i}); });
+  pts.forEach(p => { (layers[p.layer] = layers[p.layer] || []).push(p); });
+
+  // 同じ層は角度順にリング状に結ぶ
   Object.values(layers).forEach(ln => {
-    const cnt = ln.length;
-    if (cnt < 2) return;
+    if (ln.length < 2) return;
+    const ring = [...ln].sort((a, b) => a.angle - b.angle);
+    const cnt = ring.length;
     for (let i = 0; i < cnt; i++) {
-      const a = ln[i], b = ln[(i+1)%cnt];
+      if (cnt === 2 && i === 1) break;   // 2点は往復して二重に描かない
+      const a = ring[i], b = ring[(i + 1) % cnt];
+      if (Math.hypot(a.x - b.x, a.y - b.y) > MAX_LINK) continue;
       edgesEl.appendChild(svgEl('line', {
-        class: a.layer===1 ? 'edge' : 'edge2',
+        class: a.layer === 1 ? 'edge' : 'edge2',
         x1: a.x, y1: a.y, x2: b.x, y2: b.y
       }));
     }
   });
+
+  // 内側の層の最寄りと結ぶ
   const lkeys = Object.keys(layers).map(Number).sort((a,b)=>a-b);
   for (let li = 0; li < lkeys.length-1; li++) {
     const inner = layers[lkeys[li]], outer = layers[lkeys[li+1]];
     outer.forEach(op => {
       let minD=Infinity, near=null;
       inner.forEach(ip => { const d=Math.hypot(op.x-ip.x,op.y-ip.y); if(d<minD){minD=d;near=ip;} });
-      if (near) edgesEl.appendChild(svgEl('line', { class:'edge2', x1:near.x, y1:near.y, x2:op.x, y2:op.y }));
+      if (near && minD <= MAX_LINK) {
+        edgesEl.appendChild(svgEl('line', { class:'edge2', x1:near.x, y1:near.y, x2:op.x, y2:op.y }));
+      }
     });
   }
 }
@@ -530,7 +683,7 @@ function drawMemoNode(memo, pos, onTap, onLongPress) {
   const col = getColor(memo);
   const hasChildren = memo.children && memo.children.length > 0;
 
-  const nodeId = memo.id + '_' + (pos.layer||0);
+  const nodeId = memo.id;
   const g = svgEl('g', {
     class: 'node-group' + (hasChildren ? ' node-has-children' : ''),
     transform: `translate(${pos.x},${pos.y})`,
@@ -579,8 +732,8 @@ function drawMemoNode(memo, pos, onTap, onLongPress) {
   }
 
   // イベントはSVGレベルで処理するためノード側では何もしない
-  // コールバックをグローバルマップに登録
-  nodeCallbacks.set(nodeId, { onTap, onLongPress });
+  // コールバックをグローバルマップに登録（memo/el はドラッグ用）
+  nodeCallbacks.set(nodeId, { onTap, onLongPress, memo, el: g });
 
   return g;
 }
@@ -605,7 +758,7 @@ function renderMain() {
   nodeCallbacks.clear();
   const svg = document.getElementById('main-svg');
   const { cx, cy } = getCenter(svg);
-  mainPos = calcPositions(memos.length, cx, cy);
+  mainPos = positionsOf(memos, cx, cy);   // 保存された配置をそのまま使う
   drawEdges(document.getElementById('main-edges'), mainPos, cx, cy);
 
   const nodesEl = document.getElementById('main-nodes');
@@ -623,7 +776,7 @@ function renderMain() {
   if (old) old.remove();
   if (memos.length > 0) {
     const hint = svgEl('text', { id:'main-hint', class:'hint-text', x:cx, y:cy*2-18 });
-    hint.textContent = 'タップ → 閲覧　長押し → 内部へ';
+    hint.textContent = 'タップ → 閲覧　長押し → 内部へ　ドラッグ → 移動';
     document.getElementById('main-g').appendChild(hint);
   }
 
@@ -656,7 +809,7 @@ function renderDetail() {
   const svg = document.getElementById('detail-svg');
   const { cx, cy } = getCenter(svg);
   const children = memo.children || [];
-  const positions = calcPositions(children.length, cx, cy);
+  const positions = positionsOf(children, cx, cy);
 
   drawEdges(document.getElementById('detail-edges'), positions, cx, cy);
   const nodesEl = document.getElementById('detail-nodes');
@@ -793,7 +946,8 @@ document.getElementById('btn-save').addEventListener('click', () => {
       const c = parent.children.find(c=>c.id===id);
       if (c) { c.title=title; c.body=body; c.color=selectedColor; c.updatedAt=t; }
     } else {
-      parent.children.push({ id:uid(), title, body, color:selectedColor, children:[], createdAt:t, updatedAt:t });
+      const p = findFreeSlot(parent.children);
+      parent.children.push({ id:uid(), title, body, color:selectedColor, children:[], x:p.x, y:p.y, createdAt:t, updatedAt:t });
     }
     parent.updatedAt = t;
   } else {
@@ -801,7 +955,8 @@ document.getElementById('btn-save').addEventListener('click', () => {
       const m = memos.find(m=>m.id===id);
       if (m) { m.title=title; m.body=body; m.color=selectedColor; m.updatedAt=t; }
     } else {
-      memos.push({ id:uid(), title, body, color:selectedColor, children:[], createdAt:t, updatedAt:t });
+      const p = findFreeSlot(memos);
+      memos.push({ id:uid(), title, body, color:selectedColor, children:[], x:p.x, y:p.y, createdAt:t, updatedAt:t });
     }
   }
   saveData(); closeModal(); showToast('保存しました ✓');
@@ -877,7 +1032,7 @@ function sanitizeMemo(raw) {
   const color = Number.isInteger(raw.color) && raw.color >= 0 && raw.color < COLORS.length ? raw.color : 0;
   const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : (timeFromId(id) ?? now());
 
-  return {
+  const m = {
     id,
     title: title.slice(0, 18),
     body: typeof raw.body === 'string' ? raw.body : '',
@@ -886,6 +1041,9 @@ function sanitizeMemo(raw) {
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : createdAt,
     children: Array.isArray(raw.children) ? raw.children.map(sanitizeMemo).filter(Boolean) : []
   };
+  // 配置は持っていれば引き継ぐ。無ければ後で ensurePositions が空きスロットを割り当てる
+  if (Number.isFinite(raw.x) && Number.isFinite(raw.y)) { m.x = raw.x; m.y = raw.y; }
+  return m;
 }
 
 function countAll(list) {
@@ -905,6 +1063,7 @@ function mergeMemos(base, incoming, stats) {
     if ((im.updatedAt || 0) > (ex.updatedAt || 0)) {
       ex.title = im.title; ex.body = im.body; ex.color = im.color;
       ex.updatedAt = im.updatedAt;
+      if (hasPos(im)) { ex.x = im.x; ex.y = im.y; }   // 配置も復元する
       stats.updated++;
     } else {
       stats.skipped++;
@@ -952,6 +1111,7 @@ document.getElementById('file-input').addEventListener('change', e => {
 
     const stats = { added: 0, updated: 0, skipped: 0 };
     memos = mergeMemos(memos, incoming, stats);
+    ensurePositions(memos);   // 配置を持たないメモに空きスロットを割り当てる
     saveData();
 
     if (currentDetailId) renderDetail(); else renderMain();
@@ -1002,6 +1162,21 @@ function fitView() {
 }
 
 document.getElementById('fit-btn').addEventListener('click', fitView);
+
+// ══════════════════════════════════════
+//  自動レイアウトに戻す
+// ══════════════════════════════════════
+function tidyCurrentView() {
+  const view = activeView();
+  if (!view.list.length) { showToast('メモがありません'); return; }
+  if (!confirm('手で動かした配置を破棄して、自動レイアウトに戻しますか？')) return;
+  relayout(view.list);
+  saveData();
+  if (view.detail) renderDetail(); else renderMain();
+  showToast('自動レイアウトに戻しました');
+}
+document.getElementById('tidy-btn').addEventListener('click', tidyCurrentView);
+document.getElementById('btn-detail-tidy').addEventListener('click', tidyCurrentView);
 
 // ══════════════════════════════════════
 //  マウス操作
@@ -1153,6 +1328,22 @@ window.addEventListener('resize', () => {
 // （再描画のたびに呼ぶとリスナーが積み上がり、タップが長押しとして誤発火する）
 attachSvgNodeEvents(document.getElementById('main-svg'));
 attachSvgNodeEvents(document.getElementById('detail-svg'));
+
+// ドラッグ中はSVGの外へ出ても追従させたいので window で受ける
+window.addEventListener('mousemove', e => { if (dragging) dragMove(e.clientX, e.clientY); });
+window.addEventListener('mouseup',   () => { if (dragging) endDrag(); });
+window.addEventListener('touchmove', e => {
+  if (!dragging) return;
+  if (e.touches.length !== 1) { endDrag(); return; }   // ピンチに移行したら確定
+  dragMove(e.touches[0].clientX, e.touches[0].clientY);
+}, { passive: true });
+window.addEventListener('touchend',    () => { if (dragging) endDrag(); });
+window.addEventListener('touchcancel', () => { if (dragging) endDrag(); });
+
+// レイアウト定数の初期化後に実行する必要があるので、移行はここで
+const tsChanged  = migrateTimestamps(memos);
+const posChanged = ensurePositions(memos);
+if (tsChanged || posChanged) saveData();
 
 renderMain();
 </script>
