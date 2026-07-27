@@ -41,11 +41,22 @@
   .node-group { cursor: pointer; }
   .node-circle {
     fill: #fff;
-    stroke-width: 1.5;
+    stroke-width: var(--w, 1.5);
     transition: fill 0.18s, stroke-width 0.18s;
     filter: drop-shadow(0 2px 8px rgba(0,0,0,0.08));
   }
-  .node-group:hover .node-circle { fill-opacity: 0.12; stroke-width: 2.5; }
+  .node-group:hover .node-circle { fill-opacity: 0.12; stroke-width: calc(var(--w, 1.5) + 1px); }
+
+  /* 最近触ったメモは淡く光る */
+  @keyframes fresh-glow {
+    0%,100% { opacity: 0.35; r: 34; }
+    50%     { opacity: 0.08; r: 41; }
+  }
+  .fresh-ring {
+    fill: none; stroke-width: 1.2;
+    animation: fresh-glow 3.4s ease-in-out infinite;
+    pointer-events: none;
+  }
 
   /* ドラッグ中のノード */
   .node-group.dragging { opacity: 0.9; }
@@ -55,7 +66,7 @@
   }
 
   /* 子メモありノードは太枠 */
-  .node-has-children .node-circle { stroke-width: 2.5; }
+  .node-has-children .node-circle { stroke-width: calc(var(--w, 1.5) + 0.8px); }
 
   .center-node .node-circle { stroke-width: 2; stroke: var(--accent); }
   .center-plus {
@@ -103,6 +114,7 @@
   #tidy-btn   { bottom: 232px; right: 20px; font-size: 15px; }
   /* モード切り替えはアクション群と分けて左下に置く */
   #link-btn   { bottom: 24px;  left: 20px;  font-size: 17px; }
+  #search-btn { bottom: 76px;  left: 20px;  font-size: 17px; }
   .fab.active { background: var(--accent); color: #fff; }
   .fab.active:hover { background: #b8995e; }
 
@@ -126,6 +138,44 @@
     stroke-width: 3.5;
     filter: drop-shadow(0 2px 10px rgba(200,169,110,0.5));
   }
+
+  /* ─── 検索 ─── */
+  #search-bar {
+    display: none; position: fixed; top: 14px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255,255,255,0.97);
+    border: 1px solid var(--line);
+    border-radius: 2px; padding: 7px 10px 7px 14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.08);
+    z-index: 300; align-items: center; gap: 10px;
+    width: min(360px, 88vw);
+  }
+  #search-bar.open { display: flex; }
+  #search-input {
+    flex: 1; border: none; outline: none; background: transparent;
+    font-family: inherit; font-size: 14px; color: var(--text);
+  }
+  #search-count {
+    font-size: 10px; letter-spacing: 0.08em;
+    color: var(--sub); flex-shrink: 0;
+  }
+  #search-close {
+    border: none; background: none; cursor: pointer;
+    color: var(--sub); font-size: 17px; line-height: 1;
+    padding: 0 2px; font-family: inherit; flex-shrink: 0;
+  }
+  #search-close:hover { color: var(--text); }
+
+  .node-group.dimmed { opacity: 0.13; }
+  .node-group.hit .node-circle {
+    stroke-width: calc(var(--w, 1.5) + 1.6px);
+    stroke-opacity: 1 !important;
+    filter: drop-shadow(0 2px 12px rgba(200,169,110,0.55));
+  }
+  .node-group.hit .memo-label { fill-opacity: 1 !important; }
+  /* 検索中は構造線を落として、光っているノードだけを浮かせる */
+  body.searching #main-edges, body.searching #detail-edges { opacity: 0.18; }
+  body.searching .fresh-ring { display: none; }
 
   /* ─── 閲覧モーダル ─── */
   .overlay {
@@ -161,6 +211,10 @@
     font-size: 22px; font-weight: 300;
     color: var(--text); margin-bottom: 14px;
     line-height: 1.4;
+  }
+  #view-meta {
+    font-size: 9.5px; letter-spacing: 0.1em;
+    color: var(--sub); margin: -8px 0 12px;
   }
   #view-body {
     font-size: 14px; color: #5a4a3a;
@@ -270,7 +324,15 @@
 <button class="fab" id="tidy-btn" title="自動レイアウトに戻す">✳</button>
 <button class="fab" id="link-btn" title="リンクモード（ノード同士を結ぶ）">∞</button>
 
+<button class="fab" id="search-btn" title="検索（/ キー）">⌕</button>
+
 <div id="link-banner">リンクモード：2つのノードをタップして結ぶ／同じ組をもう一度ではずす</div>
+
+<div id="search-bar">
+  <input id="search-input" type="text" placeholder="検索…" autocomplete="off">
+  <span id="search-count"></span>
+  <button id="search-close" title="閉じる">×</button>
+</div>
 <input type="file" id="file-input" accept="application/json,.json" style="display:none">
 
 <!-- 内部ビュー -->
@@ -297,6 +359,7 @@
   <div class="modal">
     <div class="modal-heading">Memo</div>
     <div id="view-title"></div>
+    <div id="view-meta"></div>
     <div id="view-body"></div>
     <div class="view-actions">
       <button class="btn" id="btn-view-close">閉じる</button>
@@ -730,6 +793,30 @@ function getColor(memo) {
 }
 
 // ══════════════════════════════════════
+//  時間表現
+// ══════════════════════════════════════
+// 位置はユーザーのものなので動かさない。濃さと線の太さだけで古さを出す
+const DAY = 86400000;
+const FRESH_DAYS = 2;   // これより新しいと淡く光る
+
+function daysSince(ts) {
+  return Math.max(0, (Date.now() - ts) / DAY);
+}
+function lastTouched(memo) {
+  return memo.updatedAt || memo.createdAt || Date.now();
+}
+// 0日=1.0 / 30日≈0.5 / 90日≈0.25 / 1年≈0.08
+function freshness(memo) {
+  return 1 / (1 + daysSince(lastTouched(memo)) / 30);
+}
+function isFresh(memo) {
+  return daysSince(lastTouched(memo)) < FRESH_DAYS;
+}
+function fmtDate(ts) {
+  return new Date(ts).toLocaleDateString('ja-JP');
+}
+
+// ══════════════════════════════════════
 //  エッジ
 // ══════════════════════════════════════
 // 自由配置になったので「層」は配列の順番ではなく中心からの距離から求め直す
@@ -846,16 +933,37 @@ function drawMemoNode(memo, pos, onTap, onLongPress) {
     'data-node-id': nodeId
   });
 
+  // 古いほど淡く・細く沈ませる（グループ全体ではなく個々の要素に効かせる。
+  // グループの opacity はドラッグや検索の表現に残しておきたいため）
+  const f  = freshness(memo);
+  const op = 0.38 + 0.62 * f;
+
+  // 最近触ったメモは淡く光る
+  if (isFresh(memo)) {
+    const ring = svgEl('circle', { class:'fresh-ring', r:NODE_R });
+    ring.style.stroke = col.stroke;
+    g.appendChild(ring);
+  }
+
   // ノード本体
   const circle = svgEl('circle', { class:'node-circle', r:NODE_R });
   circle.style.stroke = col.stroke;
   circle.style.fill = '#fff';
+  circle.style.strokeOpacity = op;
+  // 太さは変数で渡し、hover / 子あり / ドラッグ の各ルールと共存させる
+  g.style.setProperty('--w', (1.2 + 1.3 * f).toFixed(2) + 'px');
   g.appendChild(circle);
 
   // タイトルラベル
   const label = svgEl('text', { class:'memo-label' });
   label.textContent = truncate(memo.title, 10);
+  label.style.fillOpacity = 0.45 + 0.55 * f;
   g.appendChild(label);
+
+  // ホバーで日付が読めるように
+  const tip = svgEl('title');
+  tip.textContent = `${memo.title}\n作成 ${fmtDate(memo.createdAt)}　更新 ${fmtDate(lastTouched(memo))}`;
+  g.appendChild(tip);
 
   // 子メモあり → 下部に小さい点3つ
   if (hasChildren) {
@@ -940,6 +1048,7 @@ function renderMain() {
     document.getElementById('center-btn'), cx, cy,
     e => { e.stopPropagation(); openEditModal({ id:null, parentId:null }); }
   );
+  applySearchHighlight();   // 再描画でハイライトが消えないように
 }
 
 // ══════════════════════════════════════
@@ -982,6 +1091,7 @@ function renderDetail() {
     document.getElementById('detail-center-btn'), cx, cy,
     e => { e.stopPropagation(); openEditModal({ id:null, parentId:currentDetailId }); }
   );
+  applySearchHighlight();
 }
 
 document.getElementById('btn-back').addEventListener('click', () => {
@@ -1014,6 +1124,10 @@ function openViewModal(memoId, parentId) {
   document.getElementById('view-title').textContent = memo.title;
   document.getElementById('view-title').style.color = col.stroke;
   document.getElementById('view-body').textContent = memo.body || '（メモなし）';
+  const d = daysSince(lastTouched(memo));
+  document.getElementById('view-meta').textContent =
+    `作成 ${fmtDate(memo.createdAt)}　更新 ${fmtDate(lastTouched(memo))}`
+    + (d >= 1 ? `（${Math.floor(d)}日前）` : '（今日）');
   document.getElementById('view-overlay').classList.add('open');
 }
 
@@ -1337,6 +1451,42 @@ function fitView() {
 document.getElementById('fit-btn').addEventListener('click', fitView);
 
 // ══════════════════════════════════════
+//  カメラ移動（検索のジャンプ用）
+// ══════════════════════════════════════
+function setCamera(z, px, py) {
+  if (currentDetailId) { dZoom=z; dPanX=px; dPanY=py; applyDetailTransform(); }
+  else                 { zoom=z;  panX=px;  panY=py;  applyTransform(); }
+}
+
+let camTimer = null;
+function animateCamera(z, px, py, dur = 420) {
+  clearInterval(camTimer);
+  if (typeof requestAnimationFrame !== 'function') { setCamera(z, px, py); return; }
+  const detail = !!currentDetailId;
+  const z0 = detail ? dZoom : zoom;
+  const x0 = detail ? dPanX : panX;
+  const y0 = detail ? dPanY : panY;
+  const t0 = Date.now();
+  const step = () => {
+    const t = Math.min(1, (Date.now() - t0) / dur);
+    const e = 1 - Math.pow(1 - t, 3);   // ease-out
+    setCamera(z0 + (z-z0)*e, x0 + (px-x0)*e, y0 + (py-y0)*e);
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// グラフ座標の一点を画面中央へ
+function focusOnPoint(px, py, z = 1) {
+  const svg = currentDetailId
+    ? document.getElementById('detail-svg')
+    : document.getElementById('main-svg');
+  const W = svg.clientWidth  || window.innerWidth;
+  const H = svg.clientHeight || window.innerHeight;
+  animateCamera(z, W/2 - px*z, H/2 - py*z);
+}
+
+// ══════════════════════════════════════
 //  自動レイアウトに戻す
 // ══════════════════════════════════════
 function tidyCurrentView() {
@@ -1351,12 +1501,95 @@ function tidyCurrentView() {
 document.getElementById('tidy-btn').addEventListener('click', tidyCurrentView);
 document.getElementById('btn-detail-tidy').addEventListener('click', tidyCurrentView);
 
+// ══════════════════════════════════════
+//  検索スポットライト
+// ══════════════════════════════════════
+let searchQuery = '';
+let searchIndex = -1;
+
+function memoMatches(m, q) {
+  return (m.title || '').toLowerCase().includes(q)
+      || (m.body  || '').toLowerCase().includes(q);
+}
+// 子孫が該当すれば親も光らせる（「あれが入っていたメモ」を辿れるように）
+function matchesDeep(m, q) {
+  return memoMatches(m, q) || (m.children || []).some(c => matchesDeep(c, q));
+}
+function currentHits() {
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) return [];
+  return activeView().list.filter(m => matchesDeep(m, q));
+}
+
+// 再描画せずクラスの付け外しだけで済ませる（ドラッグや選択の状態を壊さない）
+function applySearchHighlight() {
+  const q = searchQuery.trim().toLowerCase();
+  document.body.classList.toggle('searching', !!q);
+  nodeCallbacks.forEach(cb => {
+    if (!cb.el || !cb.memo) return;
+    if (!q) { cb.el.classList.remove('dimmed'); cb.el.classList.remove('hit'); return; }
+    const hit = matchesDeep(cb.memo, q);
+    cb.el.classList.toggle('hit', hit);
+    cb.el.classList.toggle('dimmed', !hit);
+  });
+  const n = currentHits().length;
+  document.getElementById('search-count').textContent = q ? `${n}件` : '';
+}
+
+function gotoHit(i) {
+  const hits = currentHits();
+  if (!hits.length) { showToast('見つかりませんでした'); return; }
+  searchIndex = ((i % hits.length) + hits.length) % hits.length;
+  const m = hits[searchIndex];
+  const svg = currentDetailId
+    ? document.getElementById('detail-svg')
+    : document.getElementById('main-svg');
+  const { cx, cy } = getCenter(svg);
+  focusOnPoint(cx + m.x, cy + m.y, 1);
+  if (hits.length > 1) showToast(`${searchIndex+1} / ${hits.length}　${m.title}`);
+}
+
+function openSearch() {
+  document.getElementById('search-bar').classList.add('open');
+  document.getElementById('search-input').focus();
+}
+function closeSearch() {
+  searchQuery = ''; searchIndex = -1;
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-bar').classList.remove('open');
+  applySearchHighlight();
+}
+
+document.getElementById('search-btn').addEventListener('click', () => {
+  const bar = document.getElementById('search-bar');
+  if (bar.classList.contains('open')) closeSearch(); else openSearch();
+});
+document.getElementById('search-close').addEventListener('click', closeSearch);
+document.getElementById('search-input').addEventListener('input', e => {
+  searchQuery = e.target.value;
+  searchIndex = -1;
+  applySearchHighlight();
+});
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); gotoHit(searchIndex + 1); }
+});
+
 document.getElementById('link-btn').addEventListener('click', () => setLinkMode(!linkMode));
 document.getElementById('btn-detail-link').addEventListener('click', () => setLinkMode(!linkMode));
 
-// Esc でリンクモードを抜ける
+function isTyping() {
+  const t = document.activeElement;
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
+}
+
 window.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && linkMode) setLinkMode(false);
+  if (e.key === 'Escape') {
+    // 検索 → リンクモード の順に閉じる
+    if (document.getElementById('search-bar').classList.contains('open')) { closeSearch(); return; }
+    if (linkMode) setLinkMode(false);
+    return;
+  }
+  if (e.key === '/' && !isTyping()) { e.preventDefault(); openSearch(); }
 });
 
 // ══════════════════════════════════════
