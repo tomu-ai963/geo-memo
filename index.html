@@ -270,8 +270,13 @@
   #detail-overlay {
     display: none; position: fixed; inset: 0;
     background: #fff; z-index: 200; flex-direction: column;
+    opacity: 0; transition: opacity 240ms ease;
   }
   #detail-overlay.open { display: flex; }
+  #detail-overlay.shown { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    #detail-overlay { transition: none; opacity: 1; }
+  }
   #detail-header {
     padding: 16px 22px; border-bottom: 1px solid #f0e8d8;
     display: flex; align-items: center; gap: 12px; flex-shrink: 0;
@@ -1032,7 +1037,7 @@ function renderMain() {
     nodesEl.appendChild(drawMemoNode(
       memo, pos,
       () => openViewModal(memo.id, null),   // タップ → 閲覧
-      () => openDetail(memo.id)             // 長押し → 内部へ
+      () => diveInto(memo, pos)             // 長押し → 寄ってから内部へ
     ));
   });
 
@@ -1056,16 +1061,80 @@ function renderMain() {
 // ══════════════════════════════════════
 let currentDetailId = null;
 
-function openDetail(memoId) {
+const DIVE_ZOOM  = 3.2;    // 潜る直前、メインカメラがそのノードへ寄り切る倍率
+const DIVE_DUR   = 380;
+// 子ノードは親の中に畳まれている、という見立て。潜るとここから開き、戻るとここへ畳まれる
+const INNER_SEED = 0.55;
+
+let cameraBeforeDive = null;   // 戻ったときに元の眺めへ帰すため
+let diving = false;
+
+// 内部ビューの中心を保ったまま倍率だけ変えるカメラ値
+function innerCameraAt(z) {
+  const svg = document.getElementById('detail-svg');
+  const W = svg.clientWidth  || window.innerWidth;
+  const H = svg.clientHeight || window.innerHeight;
+  return { z, px: W/2 - (W/2)*z, py: H/2 - (H/2)*z };
+}
+
+// 長押し → そのノードへ寄り切ってから内部へ。白いモーダルがいきなり覆うと
+// 空間の連続性が切れるので、カメラの移動で「潜った」ことを伝える。
+function diveInto(memo, pos) {
+  if (diving || currentDetailId) return;
+  cameraBeforeDive = { zoom, panX, panY };
+  if (reduceMotion()) { openDetail(memo.id, false); return; }
+  diving = true;
+  const svg = document.getElementById('main-svg');
+  const W = svg.clientWidth  || window.innerWidth;
+  const H = svg.clientHeight || window.innerHeight;
+  animateCamera(DIVE_ZOOM, W/2 - pos.x*DIVE_ZOOM, H/2 - pos.y*DIVE_ZOOM, DIVE_DUR);
+  // 寄り切る少し手前から内部を重ね始めると、動きが途切れない
+  setTimeout(() => { diving = false; openDetail(memo.id, true); }, DIVE_DUR - 70);
+}
+
+function openDetail(memoId, animate = false) {
   currentDetailId = memoId;
   linkFrom = null;   // スコープが変わるので選択は持ち越さない
   const memo = memos.find(m => m.id === memoId);
   if (!memo) return;
   document.getElementById('detail-title-text').textContent = memo.title;
-  document.getElementById('detail-overlay').classList.add('open');
-  // トランスフォームは renderDetail 後にリセット
-  setTimeout(() => { dZoom=1; dPanX=0; dPanY=0; applyDetailTransform(); }, 50);
+  const ov = document.getElementById('detail-overlay');
+  ov.classList.add('open');
   renderDetail();
+
+  if (animate) {
+    // ノードの中に畳まれていた子たちが、寄り切った先で開いていく
+    const seed = innerCameraAt(INNER_SEED);
+    setCameraOn(true, seed.z, seed.px, seed.py);
+    requestAnimationFrame(() => {
+      ov.classList.add('shown');
+      animateCamera(1, 0, 0, 340);
+    });
+  } else {
+    setCameraOn(true, 1, 0, 0);
+    ov.classList.add('shown');
+  }
+}
+
+function closeDetail() {
+  const ov = document.getElementById('detail-overlay');
+  const back = () => {
+    ov.classList.remove('open');
+    ov.classList.remove('shown');
+    currentDetailId = null;
+    linkFrom = null;
+    renderMain();
+    const c = cameraBeforeDive;
+    cameraBeforeDive = null;
+    // メインは潜ったときのまま寄っている。そこから元の眺めへ引き戻す。
+    if (c) animateCamera(c.zoom, c.panX, c.panY, 460);
+  };
+  if (reduceMotion()) { back(); return; }
+  // 子たちが親の中へ畳まれ、続けてメインのカメラが引く
+  const seed = innerCameraAt(INNER_SEED);
+  animateCamera(seed.z, seed.px, seed.py, 260);
+  ov.classList.remove('shown');
+  setTimeout(back, 250);
 }
 
 function renderDetail() {
@@ -1094,12 +1163,7 @@ function renderDetail() {
   applySearchHighlight();
 }
 
-document.getElementById('btn-back').addEventListener('click', () => {
-  document.getElementById('detail-overlay').classList.remove('open');
-  currentDetailId = null;
-  linkFrom = null;
-  renderMain();
-});
+document.getElementById('btn-back').addEventListener('click', closeDetail);
 
 // ══════════════════════════════════════
 //  閲覧モーダル
@@ -1453,24 +1517,35 @@ document.getElementById('fit-btn').addEventListener('click', fitView);
 // ══════════════════════════════════════
 //  カメラ移動（検索のジャンプ用）
 // ══════════════════════════════════════
-function setCamera(z, px, py) {
-  if (currentDetailId) { dZoom=z; dPanX=px; dPanY=py; applyDetailTransform(); }
-  else                 { zoom=z;  panX=px;  panY=py;  applyTransform(); }
+function reduceMotion() {
+  return typeof matchMedia === 'function'
+      && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-let camTimer = null;
+function setCameraOn(detail, z, px, py) {
+  if (detail) { dZoom=z; dPanX=px; dPanY=py; applyDetailTransform(); }
+  else        { zoom=z;  panX=px;  panY=py;  applyTransform(); }
+}
+function setCamera(z, px, py) { setCameraOn(!!currentDetailId, z, px, py); }
+
+let camSeq = 0;
 function animateCamera(z, px, py, dur = 420) {
-  clearInterval(camTimer);
-  if (typeof requestAnimationFrame !== 'function') { setCamera(z, px, py); return; }
+  // 行き先は開始時に決める。潜り込みの途中で内部ビューへ切り替わっても、
+  // 走っているアニメーションが別のカメラを書き換えてしまわないように。
   const detail = !!currentDetailId;
+  const seq = ++camSeq;
+  if (typeof requestAnimationFrame !== 'function' || reduceMotion()) {
+    setCameraOn(detail, z, px, py); return;
+  }
   const z0 = detail ? dZoom : zoom;
   const x0 = detail ? dPanX : panX;
   const y0 = detail ? dPanY : panY;
   const t0 = Date.now();
   const step = () => {
+    if (seq !== camSeq) return;         // 後から来た移動に道を譲る
     const t = Math.min(1, (Date.now() - t0) / dur);
     const e = 1 - Math.pow(1 - t, 3);   // ease-out
-    setCamera(z0 + (z-z0)*e, x0 + (px-x0)*e, y0 + (py-y0)*e);
+    setCameraOn(detail, z0 + (z-z0)*e, x0 + (px-x0)*e, y0 + (py-y0)*e);
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -1586,7 +1661,8 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     // 検索 → リンクモード の順に閉じる
     if (document.getElementById('search-bar').classList.contains('open')) { closeSearch(); return; }
-    if (linkMode) setLinkMode(false);
+    if (linkMode) { setLinkMode(false); return; }
+    if (currentDetailId) closeDetail();   // 内部ビューからは Esc でも浮上できる
     return;
   }
   if (e.key === '/' && !isTyping()) { e.preventDefault(); openSearch(); }
@@ -1681,9 +1757,6 @@ function applyDetailTransform() {
     'transform', `translate(${dPanX},${dPanY}) scale(${dZoom})`
   );
 }
-
-// 内部ビューを開くときにリセット
-function resetDetailTransform() { dZoom=1; dPanX=0; dPanY=0; applyDetailTransform(); }
 
 detailSvg.addEventListener('touchstart', e => {
   Array.from(e.touches).forEach(t => {
